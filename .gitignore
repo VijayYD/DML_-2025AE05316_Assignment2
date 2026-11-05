@@ -1,0 +1,20 @@
+# Raw dataset (auto-downloaded by torchvision; not part of the submission)
+data/
+
+# Python
+__pycache__/
+*.pyc
+
+# Scratch / smoke-test artifacts used only to validate the pipeline
+build/_smoketest*.ipynb
+
+# OS cruft
+.DS_Store
+
+# In-progress run outputs (committed explicitly once a full, final run completes)
+figures/*.png
+results/*.csv
+results/*.json
+screenshots/*.png
+build/notebook_export.html
+build/report.html
