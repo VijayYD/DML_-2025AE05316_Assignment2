@@ -26,7 +26,9 @@ from pygments import highlight
 from pygments.lexers import PythonLexer
 from pygments.formatters import HtmlFormatter
 
-BASE_DIR = Path("/Users/ssvmindsprivatelimited/Desktop/MTech/Assignments/DML Assignment2/DML_Assignment2")
+# Auto-detected from this script's own location (build/..), so this works
+# unmodified on another machine (e.g. a lab GPU server) without manual edits.
+BASE_DIR = Path(__file__).resolve().parent.parent
 BUILD_DIR = BASE_DIR / "build"
 FIG_DIR = BASE_DIR / "figures"
 RESULTS_DIR = BASE_DIR / "results"

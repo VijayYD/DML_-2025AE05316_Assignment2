@@ -8,6 +8,8 @@ Run with no flags to build the final deliverable notebook with the exact
 fixed experimental configuration from the assignment brief.
 """
 import argparse
+from pathlib import Path
+
 import nbformat as nbf
 
 ROLL_NO = "2025AE05316"
@@ -1584,6 +1586,10 @@ display(Markdown(
 
 
 if __name__ == "__main__":
+    # Output defaults to this script's own directory (build/), so this
+    # works unmodified when the repo is checked out on another machine.
+    SCRIPT_DIR = Path(__file__).resolve().parent
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--quick", action="store_true", help="Build a fast smoke-test notebook")
     parser.add_argument("--out", default=None, help="Output .ipynb path")
@@ -1592,8 +1598,8 @@ if __name__ == "__main__":
     if args.out:
         out = args.out
     elif args.quick:
-        out = "/Users/ssvmindsprivatelimited/Desktop/MTech/Assignments/DML Assignment2/DML_Assignment2/build/_smoketest.ipynb"
+        out = str(SCRIPT_DIR / "_smoketest.ipynb")
     else:
-        out = "/Users/ssvmindsprivatelimited/Desktop/MTech/Assignments/DML Assignment2/DML_Assignment2/build/DML_2025AE05316_Assignment2.ipynb"
+        out = str(SCRIPT_DIR / f"DML_{ROLL_NO}_Assignment2.ipynb")
 
     build(quick=args.quick, out_path=out)
