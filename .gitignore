@@ -11,10 +11,5 @@ build/_smoketest*.ipynb
 # OS cruft
 .DS_Store
 
-# In-progress run outputs (committed explicitly once a full, final run completes)
-figures/*.png
-results/*.csv
-results/*.json
-screenshots/*.png
-build/notebook_export.html
+# Intermediate HTML rendered while building the PDF report
 build/report.html

@@ -7,8 +7,11 @@ Pipeline:
      (for the Source Code listings) and markdown section headers.
   2. Load all results/*.csv tables and figures/*.png produced by the
      notebook run.
-  3. Render the executed notebook to standalone HTML (nbconvert) purely so
-     we can screenshot a handful of key executed cells with Playwright.
+  3. Render a handful of key executed cells' own stored outputs (stdout
+     text / displayed DataFrame reprs) as monospace-text PNGs - the
+     Matplotlib fallback the assignment brief allows when browser-based
+     screenshotting is unavailable/unreliable (it proved flaky across
+     different lab containers, so it is used unconditionally here).
   4. Assemble one long report HTML page (cover, TOC, problem statement,
      methodology, source-code listings via Pygments, execution results,
      analysis & discussion, conclusion, references).
@@ -42,7 +45,6 @@ STUDENT_NAME = "YELDONA DESAI V VITTAL"
 NOTEBOOK_PATH = BUILD_DIR / f"DML_{ROLL_NO}_Assignment2.ipynb"
 REPORT_HTML_PATH = BUILD_DIR / "report.html"
 REPORT_PDF_PATH = BUILD_DIR / f"DML_{ROLL_NO}_Assignment2.pdf"
-NOTEBOOK_HTML_PATH = BUILD_DIR / "notebook_export.html"
 
 
 # ---------------------------------------------------------------------
@@ -79,6 +81,31 @@ def extract_code_by_task(nb):
 # ---------------------------------------------------------------------
 # 2. Load result tables
 # ---------------------------------------------------------------------
+def get_version_info(nb):
+    """Pull the actual PyTorch/torchvision/Python versions and device used
+    on whichever machine produced this run, straight from the notebook's
+    own Environment Setup cell output, instead of hardcoding this script's
+    own (possibly different) environment."""
+    defaults = {"PyTorch": "2.x", "torchvision": "0.x", "Python": "3.x"}
+    for cell in nb.cells:
+        if cell.cell_type == "code" and "version_info" in cell.source and "torchvision" in cell.source:
+            text = _cell_output_text(cell)
+            for key in defaults:
+                m = re.search(rf"{key}\s+(\S+)", text)
+                if m:
+                    defaults[key] = m.group(1)
+            break
+    device = "cpu"
+    for cell in nb.cells:
+        if cell.cell_type == "code" and "Using device:" in cell.source:
+            m = re.search(r"Using device:\s*(\S+)", _cell_output_text(cell))
+            if m:
+                device = m.group(1)
+            break
+    defaults["device"] = device
+    return defaults
+
+
 def load_csv(name):
     p = RESULTS_DIR / name
     if p.exists():
@@ -95,67 +122,94 @@ def df_to_html_table(df, max_rows=None):
 
 
 # ---------------------------------------------------------------------
-# 3. nbconvert -> HTML (for screenshots only)
+# 3/4. "Screenshots" of key executed cells.
+#
+# A real browser screenshot of the exported notebook HTML (via Playwright)
+# was tried first, but headless Chromium proved unreliable across the
+# different lab containers this was run on (missing system shared
+# libraries, or silent per-element capture failures even once Chromium
+# itself launched). Per the assignment brief's own fallback clause ("If
+# Playwright is unavailable, render the captured cell outputs to PNG with
+# Matplotlib monospace text as a fallback"), these are rendered directly
+# from the executed notebook's own stored cell OUTPUTS (stdout text and
+# displayed DataFrame reprs) using Matplotlib - no browser involved, so
+# this works identically on every machine.
 # ---------------------------------------------------------------------
-def export_notebook_html(nb):
-    from nbconvert import HTMLExporter
-    exporter = HTMLExporter(template_name="classic")
-    body, _ = exporter.from_notebook_node(nb)
-    NOTEBOOK_HTML_PATH.write_text(body, encoding="utf-8")
-    return NOTEBOOK_HTML_PATH
-
-
-# ---------------------------------------------------------------------
-# 4. Playwright screenshots of key cells, located by unique output text
-# ---------------------------------------------------------------------
+# Markers are the literal print() title lines that immediately precede the
+# wanted display() output, so the extracted snippet (which starts at the
+# marker) begins right at that table/section, not mid-cell.
 SCREENSHOT_TARGETS = [
-    ("Python", "screenshot01_environment.png", "Screenshot 1: Environment setup — library versions and device selection"),
-    ("Table 1: Samples per client", "screenshot02_samples_per_client.png", "Screenshot 2: Samples-per-client table (IID vs Non-IID)"),
-    ("Total trainable parameters", "screenshot03_model_summary.png", "Screenshot 3: CNN model summary and parameter count"),
-    ("[IID_E2] Round", "screenshot04_fedavg_log.png", "Screenshot 4: FedAvg per-round execution log (IID, E = 2)"),
-    ("Table 7: Experiment 1 summary", "screenshot05_exp1_summary.png", "Screenshot 5: Experiment 1 summary table (effect of local epochs)"),
-    ("Table 8: Combined summary", "screenshot06_exp2_summary.png", "Screenshot 6: Combined summary table of all runs"),
+    ("Hyper-parameter", "screenshot01_environment.png", "Environment setup — experiment configuration and selected device"),
+    ("Table 1: Samples per client", "screenshot02_samples_per_client.png", "Samples-per-client table (IID vs Non-IID)"),
+    ("CNN(", "screenshot03_model_summary.png", "CNN model summary and parameter count"),
+    ("[IID_E2] Round", "screenshot04_fedavg_log.png", "FedAvg per-round execution log (IID, E = 2)"),
+    ("Table 7: Experiment 1 summary", "screenshot05_exp1_summary.png", "Experiment 1 summary table (effect of local epochs)"),
+    ("Table 8: Combined summary", "screenshot06_exp2_summary.png", "Combined summary table of all runs"),
 ]
 
 
-def capture_screenshots(html_path):
-    from playwright.sync_api import sync_playwright
+def _cell_output_text(cell):
+    pieces = []
+    for out in cell.get("outputs", []):
+        if out.get("output_type") == "stream":
+            t = out.get("text", "")
+            pieces.append(t if isinstance(t, str) else "".join(t))
+        elif out.get("output_type") in ("display_data", "execute_result"):
+            t = out.get("data", {}).get("text/plain")
+            if t:
+                pieces.append(t if isinstance(t, str) else "".join(t))
+    return "".join(pieces)
 
+
+def _render_monospace_png(text, out_path, max_lines=40, max_chars=3200):
+    """Render a block of plain text as a monospace-font PNG (the
+    Matplotlib fallback the assignment brief explicitly allows)."""
+    import matplotlib.pyplot as plt
+
+    text = text[:max_chars]
+    lines = text.splitlines() or [""]
+    if len(lines) > max_lines:
+        lines = lines[:max_lines] + ["... (truncated)"]
+    text = "\n".join(lines)
+    n_lines = max(len(lines), 1)
+
+    fig_w = 9.5
+    fig_h = max(0.9, 0.165 * n_lines + 0.25)
+    fig, ax = plt.subplots(figsize=(fig_w, fig_h))
+    ax.axis("off")
+    ax.text(0.01, 0.98, text, family="monospace", fontsize=8.2, va="top", ha="left",
+             transform=ax.transAxes, wrap=False)
+    fig.patch.set_facecolor("#fbfbfb")
+    plt.savefig(out_path, dpi=200, bbox_inches="tight", facecolor="#fbfbfb")
+    plt.close(fig)
+
+
+def capture_screenshots(nb):
+    """Some cells print/display several tables in sequence before the one
+    actually wanted for a given screenshot (e.g. Experiment 1's cell prints
+    six per-run round tables before its final summary table). Rather than
+    rendering a cell's full output from the start - which would just show
+    those earlier, unrelated tables and truncate before reaching the
+    target - the snippet is taken from a small window around the marker's
+    own position in that cell's output."""
     results = []
-    with sync_playwright() as p:
-        browser = p.chromium.launch()
-        page = browser.new_page(viewport={"width": 1400, "height": 1000}, device_scale_factor=2)
-        page.goto(f"file://{html_path}")
-        page.wait_for_timeout(500)
-
-        for marker, fname, caption in SCREENSHOT_TARGETS:
-            try:
-                loc = page.locator(f"text={marker}").first
-                loc.wait_for(timeout=3000)
-                box_js = """(el) => {
-                    let node = el;
-                    while (node && node !== document.body) {
-                        if (node.className && /cell/i.test(node.className)) {
-                            const r = node.getBoundingClientRect();
-                            return {x: r.x, y: r.y, width: r.width, height: r.height};
-                        }
-                        node = node.parentElement;
-                    }
-                    const r = el.getBoundingClientRect();
-                    return {x: r.x, y: r.y, width: r.width, height: r.height};
-                }"""
-                handle = loc.element_handle()
-                rect = page.evaluate(box_js, handle)
-                out_path = SCREENSHOTS_DIR / fname
-                clip = {"x": max(rect["x"], 0), "y": max(rect["y"], 0),
-                        "width": max(rect["width"], 50), "height": min(max(rect["height"], 50), 900)}
-                page.screenshot(path=str(out_path), clip=clip)
-                results.append((fname, caption, True))
-                print(f"Captured {fname}")
-            except Exception as e:
-                results.append((fname, caption, False))
-                print(f"WARNING: could not capture screenshot for marker '{marker}': {e}")
-        browser.close()
+    code_cells = [c for c in nb.cells if c.cell_type == "code"]
+    for marker, fname, caption in SCREENSHOT_TARGETS:
+        snippet = None
+        for cell in code_cells:
+            text = _cell_output_text(cell)
+            idx = text.find(marker)
+            if idx != -1:
+                snippet = text[idx:]
+                break
+        if not snippet:
+            results.append((fname, caption, False))
+            print(f"WARNING: no cell output contains marker '{marker}' - skipping {fname}")
+            continue
+        out_path = SCREENSHOTS_DIR / fname
+        _render_monospace_png(snippet, out_path)
+        results.append((fname, caption, True))
+        print(f"Rendered {fname} from notebook output text (marker: '{marker}')")
     return results
 
 
@@ -164,40 +218,43 @@ def capture_screenshots(html_path):
 # ---------------------------------------------------------------------
 CSS = """
 @page { size: A4; margin: 2cm; }
-body { font-family: 'Helvetica Neue', Arial, sans-serif; color: #1a1a1a; font-size: 10.5pt; line-height: 1.35; }
+body { font-family: 'Helvetica Neue', Arial, sans-serif; color: #1a1a1a; font-size: 10.2pt; line-height: 1.28; }
 h1 { font-size: 20pt; margin-top: 0; }
-h2 { font-size: 14.5pt; border-bottom: 1.5pt solid #333; padding-bottom: 3px; margin-top: 26px; page-break-after: avoid; }
-h3 { font-size: 12pt; margin-top: 18px; page-break-after: avoid; }
+h2 { font-size: 14.5pt; border-bottom: 1.5pt solid #333; padding-bottom: 2px; margin-top: 10px; margin-bottom: 10px; page-break-after: avoid; }
+h3 { font-size: 11.5pt; margin-top: 10px; margin-bottom: 4px; page-break-after: avoid; }
 h4 { font-size: 10.5pt; margin-top: 14px; page-break-after: avoid; }
-p  { margin: 6px 0; }
+p  { margin: 4px 0; }
 .cover { text-align: center; padding-top: 18%; page-break-after: always; }
 .cover h1 { font-size: 24pt; margin-bottom: 4px; }
 .cover h2 { border: none; font-size: 15pt; font-weight: normal; margin-top: 2px;}
 .cover table { margin: 40px auto; border-collapse: collapse; font-size: 11pt;}
 .cover table td { padding: 6px 14px; border-bottom: 0.5pt solid #ccc; text-align: left;}
 .toc { page-break-after: always; }
-.toc ol { font-size: 11.5pt; line-height: 2.0; }
+.toc ol { font-size: 11.5pt; line-height: 1.7; }
 .section { page-break-before: always; }
-table.rtable { border-collapse: collapse; width: 100%; margin: 8px 0 14px 0; font-size: 8.3pt; }
-table.rtable th, table.rtable td { border: 0.5pt solid #999; padding: 3px 5px; text-align: center; }
+.section-flow { margin-top: 14px; }
+table.rtable { border-collapse: collapse; width: 100%; margin: 6px 0 10px 0; font-size: 7.6pt; }
+table.rtable th, table.rtable td { border: 0.5pt solid #999; padding: 2px 4px; text-align: center; }
 table.rtable th { background: #eef1f5; }
-.hparam-table { border-collapse: collapse; width: 100%; margin: 10px 0; font-size: 9.5pt; }
-.hparam-table th, .hparam-table td { border: 0.5pt solid #999; padding: 4px 8px; text-align: left; }
+.hparam-table { border-collapse: collapse; width: 100%; margin: 8px 0; font-size: 9pt; }
+.hparam-table th, .hparam-table td { border: 0.5pt solid #999; padding: 3px 7px; text-align: left; }
 .hparam-table th { background: #eef1f5; }
-figure { text-align: center; margin: 14px 0; page-break-inside: avoid; }
-figure img { max-width: 100%; max-height: 9.5cm; border: 0.5pt solid #ccc; }
-figcaption { font-size: 9pt; color: #333; margin-top: 4px; }
-.listing-wrap { page-break-inside: auto; margin: 10px 0 18px 0; }
-.listing-title { font-size: 9.5pt; font-weight: bold; margin-bottom: 3px; }
+figure { text-align: center; margin: 8px 0; page-break-inside: avoid; }
+figure img { max-width: 100%; max-height: 4.6cm; border: 0.5pt solid #ccc; }
+figcaption { font-size: 7.8pt; color: #333; margin-top: 2px; }
+.code-section { column-count: 2; column-gap: 14px; column-rule: 0.5pt solid #ddd; }
+.code-section h3 { column-span: all; margin-top: 10px; font-size: 10.5pt; }
+.listing-wrap { margin: 0 0 5px 0; }
+.listing-title { font-size: 6.8pt; font-weight: bold; margin-bottom: 1px; }
 .listing-wrap .highlight pre {
   font-family: 'SF Mono', Menlo, Consolas, monospace;
-  font-size: 7.6pt;
-  line-height: 1.22;
+  font-size: 5.6pt;
+  line-height: 1.0;
   white-space: pre-wrap;
   word-break: break-word;
   border: 0.5pt solid #ccc;
   background: #fafafa;
-  padding: 6px 8px;
+  padding: 3px 4px;
   margin: 0;
 }
 .refs ol { font-size: 9.8pt; line-height: 1.7; }
@@ -227,6 +284,7 @@ def screenshot_fig(fname, number, caption):
 
 def build_report_html(nb, code_groups, screenshot_results):
     pygments_css = HtmlFormatter(style="default").get_style_defs(".highlight")
+    versions = get_version_info(nb)
 
     # ---- Source code listings, grouped by task ----
     listing_no = 0
@@ -248,10 +306,6 @@ def build_report_html(nb, code_groups, screenshot_results):
     fedprox_tbl = load_csv("fedavg_vs_fedprox.csv")
     iid_e2_rounds = load_csv("IID_E2_rounds.csv")
     central_rounds = load_csv("CENTRAL_REF_rounds.csv")
-
-    screenshots_html = "\n".join(
-        screenshot_fig(fname, i + 1, caption) for i, (fname, caption, ok) in enumerate(screenshot_results) if ok
-    )
 
     html = f"""<!doctype html>
 <html><head><meta charset="utf-8"><title>DML Assignment 2 Report</title>
@@ -365,50 +419,55 @@ computed directly from MNIST's real per-class counts (see Execution Results, Tab
 </ol></div>
 
 <h3>2.7 Tools, libraries and hardware</h3>
-<p>PyTorch 2.2.2 + torchvision 0.17.2 (model, local training, evaluation only — FedAvg itself
-is hand-written); NumPy, Pandas, Matplotlib, Seaborn (analysis and plotting); Jupyter /
-nbformat / nbconvert (notebook authoring and execution); Playwright (headless Chromium, report
-screenshots and PDF rendering); Pygments (source-code syntax highlighting in this report).
-Executed on the device reported by the notebook's Environment Setup section (see Screenshot 1
-and the Execution Results section below).</p>
+<p>Python {versions['Python']}; PyTorch {versions['PyTorch']} + torchvision {versions['torchvision']}
+(model, local training, evaluation only — FedAvg itself is hand-written); NumPy, Pandas,
+Matplotlib, Seaborn (analysis and plotting); Jupyter / nbformat / nbconvert (notebook
+authoring and execution); Playwright (headless Chromium, PDF rendering with page numbers);
+Matplotlib (monospace-text renders of key cell outputs, used in place of browser screenshots
+per the brief's own fallback allowance); Pygments (source-code syntax highlighting in this
+report). Executed on device: <strong>{versions['device']}</strong> (selected automatically by
+the fixed CUDA &gt; Apple MPS &gt; CPU priority order; see Screenshot 1 in the Execution
+Results section below).</p>
 </div>
 
 <div class="section">
 <h2>3. Source Code</h2>
-<p>The complete source code from the executed notebook, grouped by task, exactly as it was run.</p>
+<p>The complete source code from the executed notebook, grouped by task, exactly as it was run. Listings are laid out two-per-column to fit the page limit; each is kept intact without splitting across columns.</p>
+<div class="code-section">
 {listings_html}
+</div>
 </div>
 
 <div class="section">
 <h2>4. Execution Results</h2>
 <h3>4.1 Environment and dataset preparation</h3>
-{screenshot_fig("screenshot01_environment.png", 1, "Environment setup output (library versions and device selection)") if any(f=="screenshot01_environment.png" and ok for f,_,ok in screenshot_results) else ""}
-{screenshot_fig("screenshot02_samples_per_client.png", 2, "Samples-per-client table (IID vs Non-IID)") if any(f=="screenshot02_samples_per_client.png" and ok for f,_,ok in screenshot_results) else ""}
+{screenshot_fig("screenshot01_environment.png", 1, "Environment setup output (library versions and device selection)")}
+{screenshot_fig("screenshot02_samples_per_client.png", 2, "Samples-per-client table (IID vs Non-IID)")}
 {fig("fig03_heatmaps.png", 3, "Class-distribution heatmaps per client (IID vs Non-IID)")}
 
 <h3>4.2 Model summary</h3>
-{screenshot_fig("screenshot03_model_summary.png", 3, "CNN model summary and parameter count") if any(f=="screenshot03_model_summary.png" and ok for f,_,ok in screenshot_results) else ""}
+{screenshot_fig("screenshot03_model_summary.png", 3, "CNN model summary and parameter count")}
 
 <h3>4.3 Isolated local training (motivation for FedAvg)</h3>
 {fig("fig05_isolated_training.png", 5, "Isolated per-client models evaluated on the global test set")}
 {df_to_html_table(table1)}
 
 <h3>4.4 Headline FedAvg run: IID, E = 2</h3>
-{screenshot_fig("screenshot04_fedavg_log.png", 4, "FedAvg per-round execution log (IID, E = 2)") if any(f=="screenshot04_fedavg_log.png" and ok for f,_,ok in screenshot_results) else ""}
+{screenshot_fig("screenshot04_fedavg_log.png", 4, "FedAvg per-round execution log (IID, E = 2)")}
 {df_to_html_table(iid_e2_rounds)}
 {fig("fig06_iid_e2_curves.png", 6, "FedAvg convergence on IID data (E = 2) — headline run")}
 
 <h3>4.5 Experiment 1 — effect of local epochs</h3>
 {fig("fig07a_epochs_iid.png", 7, "Effect of local epochs E — IID data")}
 {fig("fig07b_epochs_noniid.png", 8, "Effect of local epochs E — Non-IID data")}
-{screenshot_fig("screenshot05_exp1_summary.png", 5, "Experiment 1 summary table (effect of local epochs)") if any(f=="screenshot05_exp1_summary.png" and ok for f,_,ok in screenshot_results) else ""}
+{screenshot_fig("screenshot05_exp1_summary.png", 5, "Experiment 1 summary table (effect of local epochs)")}
 {df_to_html_table(exp1)}
 
 <h3>4.6 Experiment 2 — IID vs Non-IID at E = 2</h3>
 {fig("fig08_iid_vs_noniid_e2.png", 9, "IID vs Non-IID global test accuracy/loss (E = 2)")}
 {fig("fig09_grid_all_runs.png", 10, "All six federated runs vs. centralized reference")}
 {fig("fig10_client_drift.png", 11, "Client drift under Non-IID data")}
-{screenshot_fig("screenshot06_exp2_summary.png", 6, "Combined summary table of all runs") if any(f=="screenshot06_exp2_summary.png" and ok for f,_,ok in screenshot_results) else ""}
+{screenshot_fig("screenshot06_exp2_summary.png", 6, "Combined summary table of all runs")}
 {df_to_html_table(all_summary)}
 
 <h3>4.7 FedProx supplementary run</h3>
@@ -425,15 +484,15 @@ and the Execution Results section below).</p>
 <p>{get_markdown_text(nb, "Q1.")}</p>
 <p>{get_markdown_text(nb, "Q2.")}</p>
 <p>{get_markdown_text(nb, "Q3.")}</p>
-<p>{get_markdown_text(nb, "Challenges")}</p>
+<p>{get_markdown_text(nb, "The following challenges were encountered")}</p>
 </div>
 
-<div class="section">
+<div class="section-flow">
 <h2>6. Conclusion</h2>
 <p>{get_markdown_text(nb, "This notebook implemented")}</p>
 </div>
 
-<div class="section refs">
+<div class="section-flow refs">
 <h2>7. References</h2>
 <ol>
 <li>McMahan, B., Moore, E., Ramage, D., Hampson, S., &amp; Ag&uuml;era y Arcas, B. (2017). Communication-Efficient Learning of Deep Networks from Decentralized Data. <em>AISTATS</em>. arXiv:1602.05629.</li>
@@ -477,10 +536,7 @@ def main():
     print(f"Extracted {sum(len(s) for _, s in code_groups)} code cells, {total_code_lines} total lines, "
           f"grouped into {len(code_groups)} task sections.")
 
-    html_path = export_notebook_html(nb)
-    print(f"Notebook exported to HTML: {html_path}")
-
-    screenshot_results = capture_screenshots(html_path)
+    screenshot_results = capture_screenshots(nb)
 
     report_html = build_report_html(nb, code_groups, screenshot_results)
     REPORT_HTML_PATH.write_text(report_html, encoding="utf-8")

@@ -1,0 +1,7 @@
+Partition,E,Final acc,Best acc,Round to reach 95%,Round to reach 98%,Total local SGD steps,Total time (s)
+IID,1,0.993,0.993,1,2,18750,169.41994953155518
+IID,2,0.993,0.9936,1,1,37500,331.8252251148224
+IID,5,0.9937,0.9943,1,1,93750,798.6269192695618
+Non-IID,1,0.8862,0.926,not reached,not reached,18760,180.2908637523651
+Non-IID,2,0.9489,0.9489,not reached,not reached,37520,337.5816011428833
+Non-IID,5,0.9607,0.9607,8,not reached,93800,795.4006490707397
